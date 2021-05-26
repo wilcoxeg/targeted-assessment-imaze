@@ -1,0 +1,812 @@
+---
+title: "Human Model Comparison"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r, output=FALSE}
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(plotrix)
+library(stringr)
+library(urltools)
+library(dplyr)
+library(readxl)
+library(wesanderson)
+library(rpart)
+library(sjPlot)
+library(brms)
+library(Hmisc)
+library(Cairo)
+library(viridis)
+```
+
+
+# Data Import and Cleaning
+
+Read in surprisal values from our neural language models
+
+```{r}
+
+model_df = read_csv("../data/model_surprisals.csv")
+
+model_agg = model_df %>%
+  mutate(gpt2 = (gpt2_1584550421 + gpt2_1585674487 + gpt2_1587139950) / 3,
+         rnng = (rnng_38435 + rnng_62488 + rnng_7245) / 3) %>%
+  rename(grnn = grnn_0,
+         jrnn = jrnn_0) %>%
+  select(token, sentence, gpt2, rnng, grnn, jrnn, word_number, token)
+
+
+```
+
+Read in iMaze data, turn numerical IDs into suite names, remove data that is after a mistake and outliers.
+
+```{r}
+
+df = read_csv("../data/syntaxgym_imaze_results.csv") %>%
+  mutate(group = as.character(group)) %>%
+  mutate(group = if_else(nchar(group) < 3, paste("00",group), group)) %>%
+  filter(nchar(group) > 3) %>%
+  mutate(suite = case_when(
+    startsWith(group, "00") ~ "SVNA-pp",
+    startsWith(group, "101") ~ "SVNA-orc",
+    startsWith(group, "20") ~ "SVNA-src",
+    startsWith(group, "30") ~ "NPL-any-orc",
+    startsWith(group, "40") ~ "NPL-any-src",
+    startsWith(group, "50") ~ "NPL-ever-orc",
+    startsWith(group, "50") ~ "NPL-ever-orc",
+    startsWith(group, "60") ~ "NPL-ever-src",
+    startsWith(group, "70") ~ "RNA-f-orc",
+    startsWith(group, "80") ~ "RNA-f-src",
+    startsWith(group, "90") ~ "RNA-f-pp",
+    startsWith(group, "100") ~ "RNA-m-orc",
+    startsWith(group, "110") ~ "RNA-m-src",
+    startsWith(group, "120") ~ "RNA-m-pp",
+    startsWith(group, "130") ~ "FGD-pp",
+    startsWith(group, "140") ~ "FGD-obj",
+    startsWith(group, "150") ~ "FGD-sbj",
+    startsWith(group, "160") ~ "Cleft",
+    startsWith(group, "170") ~ "MVRR"
+  ))
+
+# Data cleaning
+
+df = df %>%
+  mutate(rt = as.numeric(as.character(rt)),
+         l_maze = as.logical(l_maze),
+         correct = if_else(correct=="no", F, T),
+         freq = log(freq+1)) #Log frequency data. Add 1 to avoid -inf.
+
+#Remove data that is after mistake
+data_no_na = df %>% filter(!(is.na(rt)))
+message("Removed ", format(100-100*nrow(data_no_na)/nrow(df), digits=4), "% of the data for being na (after a mistake).")
+
+#Find standard deviation and mean of reading time
+stdev_rt = sd(data_no_na$rt)
+mean_rt = mean(data_no_na$rt)
+
+#Changed data that is more than 2 standard deviations from mean to become NA this means that in the next cell when we sum by reading time, regions that 
+# have some of data that is an outlier will become an NA
+data_cleaned = df %>% mutate(rt = replace(rt, rt > mean_rt + 2*stdev_rt, NA)) %>% mutate(rt = replace(rt, rt < mean_rt - 2*stdev_rt, NA))
+
+message("Filtered away all reading times off by 2 standard deviations. This constitutes ", format(nrow(filter(df, rt > mean_rt + 2*stdev_rt)) + nrow(filter(df, rt < mean_rt - 2*stdev_rt))), " words or ", format(100*(nrow(filter(df, rt > mean_rt + 2*stdev_rt)) + nrow(filter(df, rt < mean_rt - 2*stdev_rt))) / nrow(data_no_na), digits=4), "% words across the participants.")
+
+d_all = data_cleaned
+
+
+```
+
+Merge human data with model results, and mark critical regions
+
+```{r}
+
+d_model = merge(d_all, model_agg, by=c("sentence", "word_number")) %>%
+  mutate(condition = as.character(condition)) %>%
+  mutate(critical = case_when(
+    suite == "FGD-sbj" & (condition == "that_gap" | condition == "what_gap")  & region_number == 4 ~ T,
+    suite == "FGD-sbj" & endsWith(condition, "nogap") & region_number == 3 ~ T,
+    suite == "FGD-obj" & (condition == "that_gap" | condition == "what_gap") & region_number == 6 ~ T,
+    suite == "FGD-obj" & endsWith(condition, "nogap") & region_number == 5 ~ T,
+    suite == "FGD-pp" & (condition == "that_gap" | condition == "what_gap") & region_number == 8 ~ T,
+    suite == "FGD-pp" & endsWith(condition, "nogap") & region_number == 7 ~ T,
+    startsWith(suite, "MVRR") & region_number == 5 ~ T,
+    startsWith(suite, "Cleft") & region_number == 6 ~ T,
+    startsWith(suite, "SVNA") & region_number == 7 ~ T,
+    startsWith(suite, "NPL") & region_number == 8 ~ T,
+    startsWith(suite, "RNA") & region_number == 8 ~ T
+  )) %>%
+  mutate(critical = if_else(is.na(critical), F, T))
+
+```
+
+Sanity check -- plot the reading times for the L-Maze and G-Maze decisioin times.
+
+```{r}
+d_model %>%
+  filter(critical==F) %>%
+  ggplot(aes(x=rt, color=l_maze)) +
+    theme_bw() +
+    geom_density() +
+    coord_cartesian(xlim=c(0,3500))
+
+d_model %>%
+  filter(!is.na(rt)) %>%
+  filter(critical == F) %>%
+  group_by(l_maze) %>%
+    summarise(m=mean(rt),
+              s=std.error(rt),
+              u = m + 1.96 * s,
+              l = m - 1.96 * s)
+```
+
+Get the ms/bit scalar term for each of our models, which we use to convert differences in surprisal values between conditions into predicted slowdowns.
+
+```{r}
+lm_gpt = d_model %>%
+  filter(l_maze == T) %>%
+  lmer(rt ~ gpt2 + len + freq + (1|MD5) + (1|group), data = .)
+summary(lm_gpt)
+
+lm_rnng = d_model %>%
+  filter(l_maze == T) %>%
+  lmer(rt ~ rnng + len + freq + (1|MD5) + (1|group), data = .)
+summary(lm_rnng)
+
+lm_grnn = d_model %>%
+  filter(l_maze == T) %>%
+  lmer(rt ~ grnn + len + freq + (1|MD5) + (1|group), data = .)
+summary(lm_grnn)
+
+lm_jrnn = d_model %>%
+  filter(l_maze == T) %>%
+  lmer(rt ~ jrnn + len + freq + (1|MD5) + (1|group), data = .)
+summary(lm_jrnn)
+
+```
+
+# Analysis
+
+Plot each test suite region-by-region, as is common in psycholinguistic visualizations
+
+```{r}
+
+plot_suite = function(suite_name, df){
+  df %>%
+  ggplot(aes(x=region_number, y=m, color=condition)) +
+    theme_bw() +
+    geom_line() +
+    geom_point() +
+    geom_errorbar(aes(ymax = upper, ymin = lower), width = 0.1) +
+    facet_grid(suite~.) +
+    ggtitle(suite_name)
+  ggsave(paste("../images/region_by_region/",suite_name,".png", sep=""), width=8, height=4)
+  return(df)
+}
+
+# Averages on each condition, for each test suite
+d_all %>%
+  drop_na() %>%
+  group_by(suite, region_number, condition) %>%
+    summarise(m = mean(rt),
+              s = std.error(rt),
+              upper = m + 1.96 * s,
+              lower = m - 1.96 * s) %>%
+  ungroup() %>%
+  group_by(suite)%>%
+    do(plot_suite(unique(.$suite), .)) %>%
+  ungroup()
+
+
+```
+
+The subsequent cells derive the prediciton accuracy and effect size differences betwen each of the crucial conditions, for each grammatical construction.
+
+```{r}
+d_item_agg = d_model %>%
+  drop_na() %>%
+  group_by(suite, region_number, condition, group) %>% 
+    summarise(human=mean(rt),
+              gpt2 = mean(gpt2),
+              rnng = mean(rnng),
+              jrnn = mean(jrnn),
+              grnn = mean(grnn)) %>%
+  ungroup() %>%
+  gather(model, metric, c("human", "gpt2", "rnng", "jrnn", "grnn"))
+```
+
+```{r}
+df_RNA = d_item_agg %>%
+  filter(startsWith(suite, "RNA"),
+         region_number == 8) %>%
+  spread(condition, metric) %>%
+  mutate(plural_match_effect = mismatch_plural - match_plural,
+         plural_match_prediction = plural_match_effect > 0) %>%
+  mutate(sing_match_effect = mismatch_sing - match_sing,
+         sing_match_prediction = sing_match_effect > 0)
+  
+df_RAN_pred = df_RNA %>% select(ends_with("prediction"), suite, group, model) %>% gather(prediction, score, ends_with("prediction"))  %>% drop_na()
+df_RAN_effect = df_RNA %>% select(ends_with("effect"), suite, group, model) %>% gather(prediction, score, ends_with("effect"))  %>% drop_na()
+
+```
+
+```{r}
+df_NPL = d_item_agg %>%
+  filter(startsWith(suite, "NPL"),
+         region_number == 8) %>%
+  spread(condition, metric) %>%
+  mutate(pos_intervener_effect = pos_pos - neg_pos,
+         pos_intervener_prediction = pos_intervener_effect > 0) %>%
+  mutate(neg_intervener_effect = pos_neg - neg_neg,
+         neg_intervener_prediction = neg_intervener_effect > 0) %>%
+  mutate(swap_intervener_effect = pos_neg - neg_pos,
+         swap_intervener_prediction = swap_intervener_effect > 0)
+ 
+df_NPL_pred = df_NPL %>% select(ends_with("prediction"), suite, group, model) %>% gather(prediction, score, ends_with("prediction"))  %>% drop_na()
+df_NPL_effect = df_NPL %>% select(ends_with("effect"), suite, group, model) %>% gather(prediction, score, ends_with("effect"))  %>% drop_na()
+   
+```
+
+```{r}
+df_SVNA = d_item_agg %>%
+  filter( (suite == "SVNA-pp" & region_number == 6) | (suite == "SVNA-orc" & region_number == 7) | (suite == "SVNA-src" & region_number == 7)) %>%
+  spread(condition, metric) %>%
+  mutate(sing_match_effect = mismatch_sing - match_sing,
+         sing_match_prediction = sing_match_effect > 0) %>%
+  mutate(plural_match_effect = mismatch_plural - match_plural,
+         plural_match_prediction = plural_match_effect > 0)
+
+df_SVNA_pred = df_SVNA %>% select(ends_with("prediction"), suite, group, model) %>% gather(prediction, score, ends_with("prediction"))  %>% drop_na()
+df_SVNA_effect = df_SVNA %>% select(ends_with("effect"), suite, group, model) %>% gather(prediction, score, ends_with("effect"))  %>% drop_na()  
+
+```
+
+```{r}
+df_cleft = d_item_agg %>%
+  filter(startsWith(suite, "Cleft"),
+         region_number == 6) %>%
+  spread(condition, metric) %>%
+  mutate(vp_match_effect = vp_mismatch - vp_match,
+         vp_match_prediction = vp_match_effect > 0) %>%
+  mutate(np_match_effect = np_mismatch - np_match,
+         np_match_prediction = np_match_effect > 0) 
+
+df_cleft_pred = df_cleft %>% select(ends_with("prediction"), suite, group, model) %>% gather(prediction, score, ends_with("prediction"))  %>% drop_na()
+df_cleft_effect = df_cleft %>% select(ends_with("effect"), suite, group, model) %>% gather(prediction, score, ends_with("effect"))  %>% drop_na()  
+
+```
+
+```{r}
+df_MVRR= d_item_agg %>%
+  filter(startsWith(suite, "MVRR"),
+         region_number == 5) %>%
+  spread(condition, metric) %>%
+  mutate(ambig_effect = reduced_ambig - unreduced_ambig,
+         ambig_prediction = ambig_effect > 0) %>%
+  mutate(reduced_effect = reduced_ambig - reduced_unambig,
+         reduced_prediction = reduced_effect > 0) %>%
+  mutate(interaction_effect = (reduced_unambig - unreduced_unambig) - (reduced_ambig - unreduced_ambig),
+         interaction_prediction = interaction_effect > 0)
+
+df_MVRR_pred = df_MVRR %>% select(ends_with("prediction"), suite, group, model) %>% gather(prediction, score, ends_with("prediction"))  %>% drop_na()
+df_MVRR_effect = df_MVRR %>% select(ends_with("effect"), suite, group, model) %>% gather(prediction, score, ends_with("effect"))  %>% drop_na()  
+  
+```
+
+```{r}
+df_FGD = d_item_agg %>%
+  mutate(condition=as.character(condition)) %>%
+  filter(
+    (suite == "FGD-sbj" & (condition == "that_gap" | condition == "what_gap")  & region_number == 4) | (suite == "FGD-sbj" & endsWith(condition, "nogap") & region_number == 3)
+    | (suite == "FGD-obj" & (condition == "that_gap" | condition == "what_gap") & region_number == 6) | (suite == "FGD-obj" & endsWith(condition, "nogap") & region_number == 5)
+    | (suite == "FGD-pp" & (condition == "that_gap" | condition == "what_gap") & region_number == 8) | (suite == "FGD-pp" & endsWith(condition, "nogap") & region_number == 7)
+  ) %>%
+  spread(condition, metric) %>%
+  mutate(wh_effect = that_gap - what_gap,
+         wh_prediction = wh_effect > 0) %>%
+  mutate(filledGap_effect = what_nogap - that_nogap,
+         filledGap_prediction = filledGap_effect > 0)
+  
+df_FGD_pred = df_FGD %>% select(ends_with("prediction"), suite, group, model) %>% gather(prediction, score, ends_with("prediction"))  %>% drop_na()
+df_FGD_effect = df_FGD %>% select(ends_with("effect"), suite, group, model) %>% gather(prediction, score, ends_with("effect"))  %>% drop_na()  
+```
+
+## Accuracy / Consistency Score Analysis
+
+Plot the accuracy scores for each test suite
+
+```{r}
+pred_df = rbind(df_NPL_pred, df_RAN_pred, df_SVNA_pred, df_cleft_pred, df_MVRR_pred, df_FGD_pred)
+
+pred_df %>%
+  group_by(suite, model) %>%
+    summarise(m = mean(score),
+              upper = binconf(sum(score), n())[2],
+              lower = binconf(sum(score), n())[3]) %>%
+  ungroup() %>%
+  mutate(label = paste(suite, sep = "\n")) %>%
+  mutate(model = factor(model, levels = c("human", "gpt2", "rnng", "jrnn", "grnn"))) %>%
+  ggplot(aes(x=model, y=m, fill=model)) +
+    theme_bw() +
+    geom_bar(stat="identity", position = position_dodge(width=0.9)) +
+    geom_errorbar(aes(ymax = upper, ymin=lower), position = position_dodge(width=0.9), width = 0.1, alpha = 0.5) +
+    geom_hline(yintercept = 0.5, linetype="dashed", color="blue") +
+    ylab("Score") +
+    facet_wrap(~suite) +
+    scale_fill_viridis(discrete=TRUE) +
+    ggtitle("Accuracy/Consistency Scores Human RTs vs. Model Surprisals") +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1,size=10),
+    legend.position = "right"
+  )
+ggsave("../images/pred_acc.pdf", width = 8, height = 4.5, device = cairo_pdf )
+
+```
+
+Pairwise comparison for each of the models on accuracy scores (takes some time to run the whole cell)
+
+```{r, eval = FALSE}
+lm_model_comp = pred_df %>%
+  filter(model == "rnng" | model == "jrnn") %>%
+  glmer(score ~ model + (model|group:suite) + (model|prediction), data = ., family=binomial)
+summary(lm_model_comp)
+
+lm_model_comp = pred_df %>%
+  filter(model == "rnng" | model == "grnn") %>%
+  glmer(score ~ model + model + (model||group:suite) + (model||prediction), data = ., family=binomial)
+summary(lm_model_comp)
+  
+lm_model_comp = pred_df %>%
+  filter(model == "rnng" | model == "gpt2") %>%
+  glmer(score ~ model + model + (model|group:suite) + (model|prediction), data = ., family=binomial)
+summary(lm_model_comp)
+
+lm_model_comp = pred_df %>%
+  filter(model == "gpt2" | model == "jrnn") %>%
+  mutate(tag = paste(group, prediction, suite, sep = "_")) %>%
+  glmer(score ~ model + (model|group:suite) + (model|prediction), data = ., family=binomial)
+summary(lm_model_comp)
+
+lm_model_comp = pred_df %>%
+  filter(model == "gpt2" | model == "grnn") %>%
+  mutate(tag = paste(group, prediction, suite, sep = "_")) %>%
+  glmer(score ~ model + (model|group:suite) + (model|prediction), data = ., family=binomial)
+summary(lm_model_comp)
+  
+lm_model_comp = pred_df %>%
+  filter(model == "jrnn" | model == "grnn") %>%
+  mutate(tag = paste(group, prediction, suite, sep = "_")) %>%
+  glmer(score ~ model + (model|group:suite) + (model|prediction), data = ., family=binomial)
+summary(lm_model_comp)
+
+```
+
+Correlation between model performance and human consistency scores.
+
+```{r}
+# Correlations
+corr_df = pred_df %>%
+  group_by(suite, model) %>%
+    summarise(m = mean(score),
+              upper = binconf(sum(score), n())[2],
+              lower = binconf(sum(score), n())[3]) %>%
+  ungroup() %>%
+  mutate(label = paste(suite, sep = "\n")) %>%
+  mutate(model = factor(model, levels = c("human", "gpt2", "rnng", "jrnn", "grnn"))) %>%
+  select(suite, model, m) %>%
+  spread(model, m)
+
+cor.test(corr_df$human, corr_df$gpt2)
+cor.test(corr_df$human, corr_df$rnng)
+cor.test(corr_df$human, corr_df$jrnn)
+cor.test(corr_df$human, corr_df$grnn)
+
+
+```
+
+Plot more in-depth image of accuracy / consistency scores that breaks out each test suite into its constituent conditions.
+
+```{r}
+pred_df = rbind(df_NPL_pred, df_RAN_pred, df_SVNA_pred, df_cleft_pred, df_MVRR_pred, df_FGD_pred)
+
+pred_df %>%
+  group_by(suite, model, prediction) %>%
+    summarise(m = mean(score),
+              upper = binconf(sum(score), n())[2],
+              lower = binconf(sum(score), n())[3]) %>%
+  ungroup() %>%
+  mutate(label = paste(suite, prediction, sep = "\n")) %>%
+  mutate(model = factor(model, levels = c("human", "gpt2", "rnng", "jrnn", "grnn"))) %>%
+  ggplot(aes(x=model, y=m, fill=prediction)) +
+    theme_bw() +
+    geom_bar(stat="identity", position = position_dodge(width=0.9)) +
+    geom_errorbar(aes(ymax = upper, ymin=lower), position = position_dodge(width=0.9), width = 0.1, alpha = 0.5) +
+    geom_hline(yintercept = 0.5, linetype="dashed", color="blue") +
+    ylab("Accuracy") +
+    facet_wrap(~suite) +
+    scale_fill_viridis(discrete=TRUE) +
+    ggtitle("Accuracy Scores Human RTs vs. Model Surprisals") +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1,size=10),
+    legend.position = "bottom"
+  )
+ggsave("../images/pred_acc_prediction.pdf", width = 8, height = 8, device = cairo_pdf )
+
+```
+
+## Slowdown Between Conditions Analysis
+
+Plot the difference between grammatical and ungrammatical conditions, with predicted model slowdowns using the derived ms/bit effect term from above. 
+
+```{r}
+effect_df = rbind(df_NPL_effect, df_RAN_effect, df_SVNA_effect, df_cleft_effect, df_MVRR_effect, df_FGD_effect)
+
+effect_df %>%
+  mutate(model = factor(model, levels = c("gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
+  mutate(score = case_when(
+    model == "gpt2" ~ score * 14,
+    model == "rnng" ~ score * 23,
+    model == "grnn" ~ score * 10,
+    model == "jrnn" ~ score * 0.5,
+    model == "human" ~ score
+  )) %>%
+  group_by(suite, model) %>%
+    summarise(m = mean(score),
+              s = std.error(score),
+              upper = m + s * 1.96,
+              lower = m - s * 1.96) %>%
+  ungroup() %>%
+  ggplot(aes(x=suite, y=m, fill = suite)) +
+    theme_bw() +
+    geom_bar(stat="identity", position = position_dodge(width=0.9)) +
+    geom_errorbar(aes(ymax = upper, ymin=lower), position = position_dodge(width=0.9), width = 0.1, alpha=0.5) +
+    labs(x = "Test Suite") +
+    scale_fill_viridis(discrete=TRUE) +
+    ylab("Slowdown in Milliseconds") +
+    facet_grid(model~.) +
+    ggtitle("Predicted vs. Observed Slowdown Between Conditions") +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1,size=10),
+    legend.position = "none"
+  )
+ggsave("../images/effect.pdf", width = 8, height = 4, device = cairo_pdf )
+
+```
+
+Pairwise regressions to determine which (if any) model is performing better than the others.
+
+```{r, eval=FALSE}
+
+model_comp_df = effect_df %>%
+  mutate(model = factor(model, levels = c("gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
+  mutate(score = case_when(
+    model == "gpt2" ~ score * 14,
+    model == "rnng" ~ score * 23,
+    model == "grnn" ~ score * 10,
+    model == "jrnn" ~ score * 0.5,
+    model == "human" ~ score
+  )) %>%
+  spread(model, score) %>%
+  mutate(
+    gpt2 = human - gpt2,
+    rnng = human - rnng,
+    jrnn = human - jrnn,
+    grnn = human - grnn
+  ) %>%
+  select(-human) %>%
+  gather(model, score, c("gpt2", "rnng", "jrnn", "grnn"))
+
+lm_model_comp = model_comp_df %>%
+  filter(model == "rnng" | model == "jrnn") %>%
+  lmer(score ~ model + (model|group:suite) + (model|prediction), data = .)
+summary(lm_model_comp)
+
+lm_model_comp = pred_df %>%
+  filter(model == "rnng" | model == "grnn") %>%
+  lmer(score ~ model + (model|group:suite) + (model|prediction), data = .)
+summary(lm_model_comp)
+  
+lm_model_comp = pred_df %>%
+  filter(model == "rnng" | model == "gpt2") %>%
+  lmer(score ~ model + (model||group:suite)+ (model||prediction), data = .)
+summary(lm_model_comp)
+
+lm_model_comp = pred_df %>%
+  filter(model == "gpt2" | model == "jrnn") %>%
+  lmer(score ~ model + (model||group:suite) + (model||prediction), data = .)
+summary(lm_model_comp)
+
+lm_model_comp = pred_df %>%
+  filter(model == "gpt2" | model == "grnn") %>%
+  lmer(score ~ model + (model||group:suite)+ (model||prediction), data = .)
+summary(lm_model_comp)
+  
+lm_model_comp = pred_df %>%
+  filter(model == "jrnn" | model == "grnn") %>%
+  lmer(score ~ model + (model||group:suite) + (model||prediction), data = .)
+summary(lm_model_comp)
+
+
+```
+
+## Scalar Analysis
+
+Scalar analysis to determine how far off the ms/bit term is to human performance
+
+```{r}
+
+get_overlap_scores = function(df, scalar) {
+
+  df = df %>%
+    mutate(model = factor(model, levels = c("gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
+    mutate(score = case_when(
+      model == "gpt2" ~ score * 14 * scalar,
+      model == "rnng" ~ score * 23 * scalar,
+      model == "grnn" ~ score * 10 * scalar,
+      model == "jrnn" ~ score * 0.5 * scalar,
+      model == "human" ~ score
+    )) %>%
+    group_by(suite, model) %>%
+      summarise(m = mean(score),
+                s = std.error(score),
+                upper = m + s * 1.96,
+                lower = m - s * 1.96) %>%
+    ungroup() %>%
+    mutate(metric = if_else(model == "human", lower, upper)) %>%
+    select(-m, -s, -upper, -lower) %>%
+    spread(model, metric) %>%
+    mutate(
+      gpt2 = if_else(gpt2 >= human, 1, 0),
+      rnng = if_else(rnng >= human, 1, 0),
+      grnn = if_else(grnn >= human, 1, 0),
+      jrnn = if_else(jrnn >= human, 1, 0)
+    ) %>%
+    summarise(
+      gpt2 = mean(gpt2),
+      rnng = mean(rnng),
+      jrnn = mean(jrnn),
+      grnn = mean(grnn)
+    )
+  
+  return(df)
+  
+}
+
+acc_increase_df = data.frame()
+for (i in 1:100){
+  acc_increase_df = rbind(acc_increase_df, get_overlap_scores(effect_df, i) %>% mutate(scalar = i))
+}
+
+acc_increase_df %>%
+  gather(model, value, c("rnng", "grnn", "gpt2", "jrnn")) %>%
+  mutate(model = factor(model, levels = c("rnng", "grnn", "gpt2", "jrnn"))) %>%
+  ggplot(aes(x = scalar, y=value, color=model, linetype=model)) +
+    theme_bw()+
+    geom_line(size = 1) +
+    #scale_color_manual(values = wes_palette("GrandBudapest1")) +
+    #scale_color_manual(values = c("#827efc", "#1d6134", "#ce75d1", "#eba250")) +
+    scale_color_viridis(discrete = T) +
+    ggtitle("Theoretical Model Performance (Task from Section 3.2)") +
+    ylab("Proportion of Tests \n within 95% CIs of Humans") +
+    xlab("ms/bit Effect Term Scalar")
+
+ggsave("../images/theoretical_performance.pdf", width = 8, height = 3, device = cairo_pdf )
+
+
+```
+
+## Residual Analysis
+
+```{r}
+
+library(mgcv)
+
+
+d_avg = d_model %>% filter(l_maze == T) %>% drop_na() %>%
+  group_by(group, word_number, condition, suite, critical) %>%
+    summarise(rt = mean(rt),
+              gpt2 = mean(gpt2),
+              grnn = mean(grnn),
+              jrnn = mean(jrnn),
+              rnng = mean(rnng),
+              len = unique(len),
+              freq = unique(freq)) %>%
+  ungroup()
+
+d_model_targets = d_avg %>% filter(critical == T) %>% drop_na()
+
+resid_df = data.frame()
+resid_critical_result_df = data.frame()
+for ( model in c("gpt2", "grnn", "jrnn", "rnng")) {
+  f = paste("rt ~",model," + len + freq")
+  
+  lm = d_avg %>% filter(critical==F) %>% drop_na() %>%
+    lm(f, data = .)
+  non_critical_resid = residuals(lm)
+  
+  lm_preds = predict(lm, d_model_targets)
+  critical_resid = d_model_targets$rt - lm_preds
+  
+  resid_critical_result_df = rbind(resid_critical_result_df, cbind(d_model_targets, lm_preds) %>% mutate(model_t = model))
+
+  critical = data.frame(critical_resid) %>% mutate(crit = "critical", model = model) %>% rename (resid = critical_resid)
+  non_critical = data.frame(non_critical_resid) %>% mutate(crit = "non_critical", model = model) %>% rename(resid = non_critical_resid)
+  resid_df = rbind(resid_df, critical, non_critical)
+}
+
+resid_df %>%
+  ggplot(aes(x=resid, fill=crit, color=crit)) +
+    theme_bw() +
+    geom_density(alpha=0.2, size=0.5) +
+    facet_grid(model~.) +
+    coord_cartesian(xlim = c(-400, 600)) +
+    ggtitle("Histogram of Residual Values") +
+    scale_fill_discrete(labels=c("Critical Region", "Non-Critical Region")) +
+    labs(x="Residual") +
+    guides(fill = guide_legend( direction = "horizontal", title.position = "top", label.position = "bottom", label.hjust = 1, label.vjust = 1, label.theme = element_text(angle = 90) ), color = "none")+
+    theme(
+      legend.position = "none",
+      legend.title = element_blank()
+    )
+ggsave("../images/acl/residuals_hist.pdf", width = 4, height = 3, device = cairo_pdf())
+
+resid_df %>%
+  mutate(resid = abs(resid)) %>%
+  group_by(model, crit) %>%
+    summarise(m = mean(resid),
+              s = std.error(resid),
+              upper = m + s * 1.96,
+              lower = m - s * 1.96) %>%
+  ungroup() %>%
+  ggplot(aes(x=model, y=m, color=crit)) +
+    theme_bw() +
+    geom_point(size = 4, position = position_dodge(0.9)) +
+    geom_errorbar(aes(ymin=lower, ymax=upper), width=0.2, position = position_dodge(0.9)) +
+    ylab("Mean Residual Error") +
+    ggtitle("Residual Error") +
+    scale_color_discrete(labels=c("Critical Region", "Non-Critical Region")) +
+    guides(color = guide_legend( direction = "horizontal", title.position = "top", label.position = "bottom", label.hjust = 1, label.vjust = 1, label.theme = element_text(angle = 90) ) ) +
+  theme(
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 8)
+  )
+#ggsave("../images/acl/residuals_vals.pdf", width = 3, height = 3, device = cairo_pdf())
+
+
+```
+
+Pairwise regressions to determine if any model is performing better than the others at the residual analysis.
+
+```{r}
+
+resid_pred_df = resid_critical_plot_df %>%
+  mutate(resid=abs(resid)) %>%
+  rename("model" = "model_t") %>%
+  drop_na() 
+
+lm_model_comp = resid_pred_df %>%
+  filter(model == "rnng" | model == "jrnn") %>%
+  lmer(resid ~ model + (model|group:suite) + (model|condition), data = .)
+summary(lm_model_comp)
+
+lm_model_comp = resid_pred_df %>%
+  filter(model == "rnng" | model == "grnn") %>%
+  lmer(resid ~ model + (model|group:suite) + (model|condition), data = .)
+summary(lm_model_comp)
+  
+lm_model_comp = resid_pred_df %>%
+  filter(model == "rnng" | model == "gpt2") %>%
+  lmer(resid ~ model + (model||group:suite)+ (model||condition), data = .)
+summary(lm_model_comp)
+
+lm_model_comp = resid_pred_df %>%
+  filter(model == "gpt2" | model == "jrnn") %>%
+  lmer(resid ~ model + (model||group:suite) + (model||condition), data = .)
+summary(lm_model_comp)
+
+lm_model_comp = resid_pred_df %>%
+  filter(model == "gpt2" | model == "grnn") %>%
+  lmer(resid ~ model + (model||group:suite)+ (model||condition), data = .)
+summary(lm_model_comp)
+  
+lm_model_comp = resid_pred_df %>%
+  filter(model == "jrnn" | model == "grnn") %>%
+  lmer(resid ~ model + (model||group:suite) + (model||condition), data = .)
+summary(lm_model_comp)
+
+
+```
+
+Plot the large residual figure (in the appendix) that includes a break-down for every test suite.
+
+Also, statistical test for difference in residuals between grammatical / ungrammatical conditions.
+
+```{r}
+
+resid_critical_plot_df =  resid_critical_result_df %>%
+  mutate(gram = case_when(
+    str_detect(condition, "mismatch") ~ F,
+    str_detect(condition, "pos_") ~ F,
+    condition == "reduced_ambig" ~ F,
+    condition == "that_gap" ~ F,
+    condition == "what_nogap" ~ F,
+  )) %>%
+  mutate(gram = if_else(is.na(gram), T, F)) %>%
+  mutate(tag = as.numeric(as.factor(paste(suite, condition)))) %>%
+  select(suite, rt, group, lm_preds, model_t, condition, gram, tag) %>%
+  mutate(resid = rt - lm_preds)
+
+resid_critical_gram = resid_critical_plot_df %>% filter(gram == T)
+resid_critical_ungram = resid_critical_plot_df %>% filter(gram == F)
+t.test(resid_critical_gram$resid, resid_critical_ungram$resid)
+
+resid_critical_plot_df %>%
+  group_by(suite, condition, model_t, gram, tag) %>%
+    summarise(m = mean(resid),
+              s = std.error(resid),
+              upper = m + s * 1.96,
+              lower = m - s * 1.96) %>%
+  ungroup() %>%
+  ggplot(aes(x=model_t, y=m, color = gram, fill=condition)) +
+    theme_bw() +
+    geom_hline(yintercept = 0, color = "blue", linetype = "dashed") +
+    geom_errorbar(aes(ymin = lower, ymax = upper), position = position_dodge(width = 0.9), width = 0.2) +
+    geom_label(aes(label = tag), position = position_dodge(width = 0.9), size = 3, label.padding = unit(0.07, "cm"), fontface = "bold") +
+    facet_wrap(suite~.) +
+    ylim(-150,800) +
+    scale_fill_grey(start = 0.99, end = 0.99 ) +
+    ylab("Mean Residual") +
+    guides(fill=FALSE) +
+    ggtitle("Residuals for Reading Times in Critical Region") +
+    labs(color = "Condition is Grammatical", fill=NA) +
+  theme(
+    legend.position = "bottom",
+    axis.title.x = element_blank()
+  )
+ggsave("../images/big_residual_targets.pdf", height = 7, width = 12, device=cairo_pdf)
+
+```
+
+Smaller residual figure for the main body of the text
+
+```{r}
+resid_critical_plot_df %>%
+  group_by(suite, condition, model_t, gram, tag) %>%
+    summarise(m = mean(resid),
+              s = std.error(resid),
+              upper = m + s * 1.96,
+              lower = m - s * 1.96) %>%
+  ungroup() %>%
+  filter(model_t == "grnn") %>%
+  filter(str_detect(suite, "^FGD")) %>%
+  ggplot(aes(x=suite, y=m, color = gram, fill=condition)) +
+    theme_bw() +
+    geom_hline(yintercept = 0, color = "blue", linetype = "dashed") +
+    geom_errorbar(aes(ymin = lower, ymax = upper), position = position_dodge(width = 0.9), width = 0.2) +
+    geom_label(aes(label = tag), position = position_dodge(width = 0.9), size = 3, label.padding = unit(0.07, "cm"), fontface = "bold") +
+    geom_label(aes(y= 730, x=1.5, label = "Grammatical \n Conditions"), color = "#1d6134", size = 4) +
+    geom_label(aes(y= 500, x=1.5, label = "Ungrammatical \n Conditions"), color = "#827efc", size = 4) +
+    scale_color_manual(values=c("#827efc", "#1d6134")) +
+    ylim(-150,800) +
+    scale_fill_grey(start =  0.99, end = 0.99 ) +
+    ylab("Mean Residual") +
+    xlab("Test") +
+    guides(fill=FALSE) +
+    ggtitle("Critical Region Residuals (GRNN)") +
+    labs(color = "Condition \n is \n Grammatical", fill=NA) +
+    #guides(color = guide_legend( direction = "horizontal", title.position = "top", label.position = "bottom", label.hjust = 1, label.vjust = 1, label.theme = element_text(angle = 90) ) ) +
+  theme(
+    legend.position = "none",
+    title = element_text(size = 9)
+  )
+ggsave("../images/zoomed_residuals.pdf", height = 3, width = 3, device=cairo_pdf)
+
+
+```
+
+
+
