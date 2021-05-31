@@ -22,6 +22,9 @@ library(brms)
 library(Hmisc)
 library(Cairo)
 library(viridis)
+library(broom)
+library(brms)
+
 ```
 
 
@@ -34,8 +37,8 @@ Read in surprisal values from our neural language models
 model_df = read_csv("../data/model_surprisals.csv")
 
 model_agg = model_df %>%
-  mutate(gpt2 = (gpt2_1584550421 + gpt2_1585674487 + gpt2_1587139950) / 3,
-         rnng = (rnng_38435 + rnng_62488 + rnng_7245) / 3) %>%
+  rename(gpt2 = gpt2_large) %>%
+  mutate(rnng = (rnng_38435 + rnng_62488 + rnng_7245) / 3) %>%
   rename(grnn = grnn_0,
          jrnn = jrnn_0) %>%
   select(token, sentence, gpt2, rnng, grnn, jrnn, word_number, token)
@@ -147,24 +150,46 @@ Get the ms/bit scalar term for each of our models, which we use to convert diffe
 
 ```{r}
 lm_gpt = d_model %>%
-  filter(l_maze == T) %>%
-  lmer(rt ~ gpt2 + len + freq + (1|MD5) + (1|group), data = .)
+  filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+  mutate(group = as.factor(group), MD5 = as.factor(MD5),
+         freq = as.integer(freq), 
+         len = as.integer(len),
+         rt = as.integer(rt)) %>%
+  lmer(rt ~ gpt2 + len + freq + (gpt2 + len + freq||MD5) + (gpt2 + len + freq||sentence), data = .,
+       control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
 summary(lm_gpt)
 
 lm_rnng = d_model %>%
-  filter(l_maze == T) %>%
-  lmer(rt ~ rnng + len + freq + (1|MD5) + (1|group), data = .)
+  filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+  mutate(group = as.factor(group), MD5 = as.factor(MD5),
+         freq = as.integer(freq), 
+         len = as.integer(len),
+         rt = as.integer(rt)) %>%
+  lmer(rt ~ rnng + len + freq + (rnng + len + freq||MD5) + (rnng + len + freq||sentence), data = .,
+       control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
 summary(lm_rnng)
 
+
 lm_grnn = d_model %>%
-  filter(l_maze == T) %>%
-  lmer(rt ~ grnn + len + freq + (1|MD5) + (1|group), data = .)
+  filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+  mutate(group = as.factor(group), MD5 = as.factor(MD5),
+         freq = as.integer(freq), 
+         len = as.integer(len),
+         rt = as.integer(rt)) %>%
+  lmer(rt ~ grnn + len + freq + (grnn + len + freq||MD5) + (grnn + len + freq||sentence), data = .,
+       control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
 summary(lm_grnn)
 
 lm_jrnn = d_model %>%
-  filter(l_maze == T) %>%
-  lmer(rt ~ jrnn + len + freq + (1|MD5) + (1|group), data = .)
+  filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+  mutate(group = as.factor(group), MD5 = as.factor(MD5),
+         freq = as.integer(freq), 
+         len = as.integer(len),
+         rt = as.integer(rt)) %>%
+  lmer(rt ~ jrnn + len + freq + (len + freq||MD5) + (len + freq||sentence), data = .,
+       control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
 summary(lm_jrnn)
+
 
 ```
 
@@ -603,28 +628,22 @@ ggsave("../images/theoretical_performance.pdf", width = 8, height = 3, device = 
 ```{r}
 
 library(mgcv)
+library(hash)
 
 
-d_avg = d_model %>% filter(l_maze == T) %>% drop_na() %>%
-  group_by(group, word_number, condition, suite, critical) %>%
-    summarise(rt = mean(rt),
-              gpt2 = mean(gpt2),
-              grnn = mean(grnn),
-              jrnn = mean(jrnn),
-              rnng = mean(rnng),
-              len = unique(len),
-              freq = unique(freq)) %>%
-  ungroup()
-
-d_model_targets = d_avg %>% filter(critical == T) %>% drop_na()
+d_model_targets = d_model %>% filter(l_maze == T, critical == T) %>% drop_na()
 
 resid_df = data.frame()
 resid_critical_result_df = data.frame()
+
 for ( model in c("gpt2", "grnn", "jrnn", "rnng")) {
-  f = paste("rt ~",model," + len + freq")
+  print(model)
   
-  lm = d_avg %>% filter(critical==F) %>% drop_na() %>%
-    lm(f, data = .)
+  formula = paste("rt ~",model," + len + freq + (", model,"+ len + freq || MD5) + (", model,"+ len + freq||sentence)")
+  
+  lm = d_model %>% filter(l_maze == T, correct == T, word_number != 0, !is.na(rt), critical == F) %>% 
+    lmer(formula, data = ., control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+  
   non_critical_resid = residuals(lm)
   
   lm_preds = predict(lm, d_model_targets)
@@ -636,6 +655,11 @@ for ( model in c("gpt2", "grnn", "jrnn", "rnng")) {
   non_critical = data.frame(non_critical_resid) %>% mutate(crit = "non_critical", model = model) %>% rename(resid = non_critical_resid)
   resid_df = rbind(resid_df, critical, non_critical)
 }
+
+```
+
+
+```{r}
 
 resid_df %>%
   ggplot(aes(x=resid, fill=crit, color=crit)) +
@@ -651,7 +675,7 @@ resid_df %>%
       legend.position = "none",
       legend.title = element_blank()
     )
-ggsave("../images/acl/residuals_hist.pdf", width = 4, height = 3, device = cairo_pdf())
+#ggsave("../images/acl/residuals_hist.pdf", width = 4, height = 3, device = cairo_pdf())
 
 resid_df %>%
   mutate(resid = abs(resid)) %>%
@@ -665,7 +689,7 @@ resid_df %>%
     theme_bw() +
     geom_point(size = 4, position = position_dodge(0.9)) +
     geom_errorbar(aes(ymin=lower, ymax=upper), width=0.2, position = position_dodge(0.9)) +
-    ylab("Mean Residual Error") +
+    ylab("Mean Absolute Residual Error") +
     ggtitle("Residual Error") +
     scale_color_discrete(labels=c("Critical Region", "Non-Critical Region")) +
     guides(color = guide_legend( direction = "horizontal", title.position = "top", label.position = "bottom", label.hjust = 1, label.vjust = 1, label.theme = element_text(angle = 90) ) ) +
@@ -808,5 +832,21 @@ ggsave("../images/zoomed_residuals.pdf", height = 3, width = 3, device=cairo_pdf
 
 ```
 
+Investigating L-Maze vs. G-Maze reaction times to address the potential confound mentioned in section 2.1
 
+```{r}
+
+d_non_critical_lmaze = d_model %>% filter(critical == F, correct == T, l_maze == T)
+d_non_critical_gmaze = d_model %>% filter(critical == F, correct == T, l_maze == F)
+
+d_model %>%
+  drop_na() %>%
+  filter(critical == F, correct == T) %>%
+  group_by(l_maze) %>%
+    summarise(m=mean(rt))
+
+t.test(d_non_critical_lmaze$rt, d_non_critical_gmaze$rt)
+
+
+```
 
