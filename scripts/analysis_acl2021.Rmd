@@ -148,46 +148,67 @@ d_model %>%
 
 Get the ms/bit scalar term for each of our models, which we use to convert differences in surprisal values between conditions into predicted slowdowns.
 
+
 ```{r}
-lm_gpt = d_model %>%
-  filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
-  mutate(group = as.factor(group), MD5 = as.factor(MD5),
-         freq = as.integer(freq), 
-         len = as.integer(len),
-         rt = as.integer(rt)) %>%
-  lmer(rt ~ gpt2 + len + freq + (gpt2 + len + freq||MD5) + (gpt2 + len + freq||sentence), data = .,
-       control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+
+if(file.exists("../data/models/gpt_full.rda")) {
+  load("../data/models/gpt_full.rda")
+} else {
+  lm_gpt = d_model %>%
+    filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+    mutate(group = as.factor(group), MD5 = as.factor(MD5),
+           freq = as.integer(freq), 
+           len = as.integer(len),
+           rt = as.integer(rt)) %>%
+    lmer(rt ~ gpt2 + len + freq + (gpt2 + len + freq||MD5) + (gpt2 + len + freq||sentence), data = ., REML = FALSE,
+         control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+    save(lm_gpt, file = "../data/models/gpt_full.rda")
+}
 summary(lm_gpt)
 
-lm_rnng = d_model %>%
-  filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
-  mutate(group = as.factor(group), MD5 = as.factor(MD5),
-         freq = as.integer(freq), 
-         len = as.integer(len),
-         rt = as.integer(rt)) %>%
-  lmer(rt ~ rnng + len + freq + (rnng + len + freq||MD5) + (rnng + len + freq||sentence), data = .,
-       control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+if(file.exists("../data/models/rnng_full.rda")) {
+  load("../data/models/rnng_full.rda")
+} else {
+  lm_rnng = d_model %>%
+    filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+    mutate(group = as.factor(group), MD5 = as.factor(MD5),
+           freq = as.integer(freq), 
+           len = as.integer(len),
+           rt = as.integer(rt)) %>%
+    lmer(rt ~ rnng + len + freq + (rnng + len + freq||MD5) + (rnng + len + freq||sentence), data = ., REML = FALSE,
+         control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+  save(lm_rnng, file = "../data/models/rnng_full.rda")
+}
 summary(lm_rnng)
 
-
-lm_grnn = d_model %>%
-  filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
-  mutate(group = as.factor(group), MD5 = as.factor(MD5),
-         freq = as.integer(freq), 
-         len = as.integer(len),
-         rt = as.integer(rt)) %>%
-  lmer(rt ~ grnn + len + freq + (grnn + len + freq||MD5) + (grnn + len + freq||sentence), data = .,
-       control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+if(file.exists("../data/models/grnn_full.rda")) {
+  load("../data/models/grnn_full.rda")
+} else {
+  lm_grnn = d_model %>%
+    filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+    mutate(group = as.factor(group), MD5 = as.factor(MD5),
+           freq = as.integer(freq), 
+           len = as.integer(len),
+           rt = as.integer(rt)) %>%
+    lmer(rt ~ grnn + len + freq + (grnn + len + freq||MD5) + (grnn + len + freq||sentence), data = .,  REML = FALSE,
+         control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+  save(lm_grnn, file = "../data/models/grnn_full.rda")
+}
 summary(lm_grnn)
 
-lm_jrnn = d_model %>%
-  filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
-  mutate(group = as.factor(group), MD5 = as.factor(MD5),
-         freq = as.integer(freq), 
-         len = as.integer(len),
-         rt = as.integer(rt)) %>%
-  lmer(rt ~ jrnn + len + freq + (len + freq||MD5) + (len + freq||sentence), data = .,
-       control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+if(file.exists("../data/models/jrnn_full.rda")) {
+  load("../data/models/jrnn_full.rda")
+} else {
+  lm_jrnn = d_model %>%
+    filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+    mutate(group = as.factor(group), MD5 = as.factor(MD5),
+           freq = as.integer(freq), 
+           len = as.integer(len),
+           rt = as.integer(rt)) %>%
+    lmer(rt ~ jrnn + len + freq + (len + freq||MD5) + (len + freq||sentence), data = .,  REML = FALSE,
+         control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5))) 
+  save(lm_jrnn, file = "../data/models/jrnn_full.rda")
+}
 summary(lm_jrnn)
 
 
@@ -472,9 +493,9 @@ effect_df = rbind(df_NPL_effect, df_RAN_effect, df_SVNA_effect, df_cleft_effect,
 effect_df %>%
   mutate(model = factor(model, levels = c("gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
   mutate(score = case_when(
-    model == "gpt2" ~ score * 14,
-    model == "rnng" ~ score * 23,
-    model == "grnn" ~ score * 10,
+    model == "gpt2" ~ score * 12,
+    model == "rnng" ~ score * 19,
+    model == "grnn" ~ score * 8.8,
     model == "jrnn" ~ score * 0.5,
     model == "human" ~ score
   )) %>%
@@ -501,6 +522,54 @@ ggsave("../images/effect.pdf", width = 8, height = 4, device = cairo_pdf )
 
 ```
 
+Statistics for paper
+
+```{r}
+effect_stats_df = effect_df %>%
+  mutate(model = factor(model, levels = c("gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
+  mutate(score = case_when(
+    model == "gpt2" ~ score * 12,
+    model == "rnng" ~ score * 19,
+    model == "grnn" ~ score * 8.8,
+    model == "jrnn" ~ score * 0.5,
+    model == "human" ~ score
+  )) %>%
+  group_by(suite, model) %>%
+    summarise(m = mean(score),
+              s = std.error(score),
+              upper = m + s * 1.96,
+              lower = m - s * 1.96) %>%
+  ungroup()
+
+# Calculate the # of tests for which the models are outside the 95% CIs of the humans
+
+effect_stats_df %>%
+  mutate(critical = if_else(model == "human", lower, upper)) %>%
+  select(-m, -s, -upper, -lower) %>%
+  spread(model, critical) %>%
+  mutate(gpt2 = gpt2 >= human,
+         rnng = rnng >= human,
+         jrnn = jrnn >= human,
+         grnn = grnn >= human) %>%
+  print(n()) %>%
+  gather(model, score, c("gpt2", "rnng", "jrnn", "grnn")) %>%
+  group_by(model) %>%
+    summarise(sum = 16 - sum(score))
+
+effect_stats_df %>%
+  select(-s, -upper, -lower) %>%
+  spread(model, m) %>%
+  mutate(gpt2 = human - gpt2,
+         rnng = human - rnng,
+         jrnn = human - jrnn,
+         grnn = human - grnn) %>%
+  gather(model, score, c("gpt2", "rnng", "jrnn", "grnn")) %>%
+  group_by(model) %>%
+    summarise(score = mean(score))
+
+```
+
+
 Pairwise regressions to determine which (if any) model is performing better than the others.
 
 ```{r, eval=FALSE}
@@ -508,9 +577,9 @@ Pairwise regressions to determine which (if any) model is performing better than
 model_comp_df = effect_df %>%
   mutate(model = factor(model, levels = c("gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
   mutate(score = case_when(
-    model == "gpt2" ~ score * 14,
-    model == "rnng" ~ score * 23,
-    model == "grnn" ~ score * 10,
+    model == "gpt2" ~ score * 12,
+    model == "rnng" ~ score * 19,
+    model == "grnn" ~ score * 8.8,
     model == "jrnn" ~ score * 0.5,
     model == "human" ~ score
   )) %>%
@@ -568,9 +637,9 @@ get_overlap_scores = function(df, scalar) {
   df = df %>%
     mutate(model = factor(model, levels = c("gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
     mutate(score = case_when(
-      model == "gpt2" ~ score * 14 * scalar,
-      model == "rnng" ~ score * 23 * scalar,
-      model == "grnn" ~ score * 10 * scalar,
+      model == "gpt2" ~ score * 12 * scalar,
+      model == "rnng" ~ score * 19 * scalar,
+      model == "grnn" ~ score * 8.8 * scalar,
       model == "jrnn" ~ score * 0.5 * scalar,
       model == "human" ~ score
     )) %>%
@@ -625,6 +694,9 @@ ggsave("../images/theoretical_performance.pdf", width = 8, height = 3, device = 
 
 ## Residual Analysis
 
+Tain models on just the non-critical region data
+
+
 ```{r}
 
 library(mgcv)
@@ -675,7 +747,7 @@ resid_df %>%
       legend.position = "none",
       legend.title = element_blank()
     )
-#ggsave("../images/acl/residuals_hist.pdf", width = 4, height = 3, device = cairo_pdf())
+ggsave("../images/residuals_hist.pdf", width = 4, height = 3, device = cairo_pdf())
 
 resid_df %>%
   mutate(resid = abs(resid)) %>%
@@ -698,7 +770,7 @@ resid_df %>%
     legend.title = element_blank(),
     legend.text = element_text(size = 8)
   )
-#ggsave("../images/acl/residuals_vals.pdf", width = 3, height = 3, device = cairo_pdf())
+ggsave("../images/residuals_vals.pdf", width = 3, height = 3, device = cairo_pdf())
 
 
 ```
@@ -707,7 +779,9 @@ Pairwise regressions to determine if any model is performing better than the oth
 
 ```{r}
 
-resid_pred_df = resid_critical_plot_df %>%
+resid_pred_df = resid_critical_result_df %>%
+  select(group, suite, model_t, condition, rt, lm_preds) %>%
+  mutate(resid = rt - lm_preds) %>%
   mutate(resid=abs(resid)) %>%
   rename("model" = "model_t") %>%
   drop_na() 
@@ -767,6 +841,8 @@ resid_critical_plot_df =  resid_critical_result_df %>%
 resid_critical_gram = resid_critical_plot_df %>% filter(gram == T)
 resid_critical_ungram = resid_critical_plot_df %>% filter(gram == F)
 t.test(resid_critical_gram$resid, resid_critical_ungram$resid)
+print(mean(abs(resid_critical_gram$resid)))
+print(mean(abs(resid_critical_ungram$resid)))
 
 resid_critical_plot_df %>%
   group_by(suite, condition, model_t, gram, tag) %>%
