@@ -15,12 +15,10 @@ library(stringr)
 library(urltools)
 library(dplyr)
 library(readxl)
-library(wesanderson)
 library(rpart)
 library(sjPlot)
 library(brms)
 library(Hmisc)
-library(Cairo)
 library(viridis)
 library(broom)
 library(brms)
@@ -34,14 +32,14 @@ Read in surprisal values from our neural language models
 
 ```{r}
 
-model_df = read_csv("../data/model_surprisals.csv")
+model_df = read_csv("../data/combined_model_surprisals_llama.csv")
 
 model_agg = model_df %>%
   rename(gpt2 = gpt2_large) %>%
   mutate(rnng = (rnng_38435 + rnng_62488 + rnng_7245) / 3) %>%
   rename(grnn = grnn_0,
          jrnn = jrnn_0) %>%
-  select(token, sentence, gpt2, rnng, grnn, jrnn, word_number, token)
+  select(token, sentence, gpt2, rnng, grnn, jrnn, llama, word_number, token)
 
 
 ```
@@ -126,7 +124,7 @@ d_model = merge(d_all, model_agg, by=c("sentence", "word_number")) %>%
 
 ```
 
-Sanity check -- plot the reading times for the L-Maze and G-Maze decisioin times.
+Sanity check -- plot the reading times for the L-Maze and G-Maze decision times.
 
 ```{r}
 d_model %>%
@@ -211,6 +209,21 @@ if(file.exists("../data/models/jrnn_full.rda")) {
 }
 summary(lm_jrnn)
 
+if(file.exists("../data/models/llama_full.rda")) {
+  load("../data/models/llama_full.rda")
+} else {
+  lm_llama = d_model %>%
+    filter(l_maze == T, correct==T, word_number != 0, ! is.na(rt)) %>%
+    mutate(group = as.factor(group), MD5 = as.factor(MD5),
+           freq = as.integer(freq), 
+           len = as.integer(len),
+           rt = as.integer(rt)) %>%
+    lmer(rt ~ llama + len + freq + (llama + len + freq||MD5) + (llama + len + freq||sentence), data = ., REML = FALSE,
+         control=lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=2e5)))
+    save(lm_llama, file = "../data/models/llama_full.rda")
+}
+summary(lm_llama)
+
 
 ```
 
@@ -259,9 +272,10 @@ d_item_agg = d_model %>%
               gpt2 = mean(gpt2),
               rnng = mean(rnng),
               jrnn = mean(jrnn),
-              grnn = mean(grnn)) %>%
+              grnn = mean(grnn),
+              llama = mean(llama)) %>%
   ungroup() %>%
-  gather(model, metric, c("human", "gpt2", "rnng", "jrnn", "grnn"))
+  gather(model, metric, c("human", "gpt2", "rnng", "jrnn", "grnn", "llama"))
 ```
 
 ```{r}
@@ -374,7 +388,7 @@ pred_df %>%
               lower = binconf(sum(score), n())[3]) %>%
   ungroup() %>%
   mutate(label = paste(suite, sep = "\n")) %>%
-  mutate(model = factor(model, levels = c("human", "gpt2", "rnng", "jrnn", "grnn"))) %>%
+  mutate(model = factor(model, levels = c("human", "gpt2", "rnng", "jrnn", "grnn", "llama"))) %>%
   ggplot(aes(x=model, y=m, fill=model)) +
     theme_bw() +
     geom_bar(stat="identity", position = position_dodge(width=0.9)) +
@@ -388,7 +402,8 @@ pred_df %>%
     axis.text.x = element_text(angle = 30, hjust = 1,size=10),
     legend.position = "right"
   )
-ggsave("../images/pred_acc.pdf", width = 8, height = 4.5, device = cairo_pdf )
+
+#ggsave("../images/pred_acc.pdf", width = 8, height = 4.5, device = cairo_pdf )
 
 ```
 
@@ -491,12 +506,13 @@ Plot the difference between grammatical and ungrammatical conditions, with predi
 effect_df = rbind(df_NPL_effect, df_RAN_effect, df_SVNA_effect, df_cleft_effect, df_MVRR_effect, df_FGD_effect)
 
 effect_df %>%
-  mutate(model = factor(model, levels = c("gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
+  mutate(model = factor(model, levels = c("llama", "gpt2", "rnng", "jrnn", "grnn", "human"))) %>%
   mutate(score = case_when(
     model == "gpt2" ~ score * 12,
     model == "rnng" ~ score * 19,
     model == "grnn" ~ score * 8.8,
     model == "jrnn" ~ score * 0.5,
+    model == "llama" ~ score * 12.5,
     model == "human" ~ score
   )) %>%
   group_by(suite, model) %>%
@@ -518,7 +534,8 @@ effect_df %>%
     axis.text.x = element_text(angle = 30, hjust = 1,size=10),
     legend.position = "none"
   )
-ggsave("../images/effect.pdf", width = 8, height = 4, device = cairo_pdf )
+
+#ggsave("../images/effect.pdf", width = 8, height = 4, device = cairo_pdf )
 
 ```
 
@@ -923,6 +940,76 @@ d_model %>%
 
 t.test(d_non_critical_lmaze$rt, d_non_critical_gmaze$rt)
 
+
+```
+
+## Plotting for Talks
+
+```{r}
+
+effect_df = rbind(df_NPL_effect, df_RAN_effect, df_SVNA_effect, df_cleft_effect, df_MVRR_effect, df_FGD_effect)
+
+plotting_df = effect_df %>%
+  mutate(model = factor(model, levels = c("human", "llama", "gpt2", "rnng", "grnn", "jrnn"))) %>%
+  # Multiply by the ms/bits conversion from the linear fits
+  mutate(score = case_when(
+    model == "gpt2" ~ score * 12,
+    model == "rnng" ~ score * 19,
+    model == "grnn" ~ score * 8.8,
+    model == "jrnn" ~ score * 0.5,
+    model == "llama" ~ score * 12.5,
+    model == "human" ~ score
+  )) %>%
+  group_by(suite, model) %>%
+    summarise(m = mean(score),
+              s = std.error(score),
+              upper = m + s * 1.96,
+              lower = m - s * 1.96) %>%
+  ungroup()
+
+```
+
+```{r}
+
+plotting_df %>%
+  filter(! grepl( "orc", suite, fixed = TRUE)) %>%
+  ggplot(aes(x=suite, y=m, fill = model)) +
+    theme_bw() +
+    geom_bar(stat="identity", position = position_dodge(width=0.9)) +
+    geom_errorbar(aes(ymax = upper, ymin=lower), position = position_dodge(width=0.9), width = 0.1, alpha=0.5) +
+    labs(x = "") +
+    #scale_fill_viridis(discrete=TRUE) +
+    ylab("Slowdown in Milliseconds") +
+    ggtitle("Predicted vs. Observed Slowdown Between Conditions") +
+  coord_cartesian(ylim = c(-20, 400)) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1,size=10),
+    legend.position = "right"
+  )
+
+ggsave("../images/talk_results.pdf", width = 10, height = 4, device = "pdf")
+
+```
+
+```{r}
+
+plotting_df %>%
+  filter(suite == "FGD-obj") %>%
+  ggplot(aes(x=suite, y=m, fill = model)) +
+    theme_bw() +
+    geom_bar(stat="identity", position = position_dodge(width=0.9)) +
+    geom_errorbar(aes(ymax = upper, ymin=lower), position = position_dodge(width=0.9), width = 0.1, alpha=0.5) +
+    labs(x = "") +
+    #scale_fill_viridis(discrete=TRUE) +
+    ylab("Slowdown in Milliseconds") +
+    ggtitle("Predicted vs. Observed Slowdown Between Conditions") +
+  coord_cartesian(ylim = c(-20, 275)) +
+  theme(
+    axis.text.x = element_blank(),
+    legend.position = "none"
+  )
+
+ggsave("../images/talk_results_zoom.pdf", width = 3, height = 3, device = "pdf")
 
 ```
 

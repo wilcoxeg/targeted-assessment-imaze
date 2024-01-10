@@ -1,0 +1,44 @@
+---
+title: "Merge New Scores"
+output: html_notebook
+---
+
+```{r, message=FALSE}
+library(tidyverse)
+library(brms)
+library(lme4)
+library(lmerTest)
+library(plotrix)
+library(stringr)
+library(readxl)
+library(VGAM)
+library(jsonlite)
+library(viridis)
+library(broom)
+```
+
+
+```{r}
+llama_scores_df = read.csv("../data/llama_imaze_results.txt", sep = "\t") %>% dplyr::select(-freq, -X) %>%
+  rename(llama_token = token, llama = surp) %>%
+  dplyr::select(-sentence_id, -token_id)
+prev_scores_df = read.csv("../data/model_surprisals.csv")
+
+combined_scores_df = cbind(prev_scores_df, llama_scores_df)
+
+write.csv(combined_scores_df, "../data/combined_model_surprisals_llama.csv")
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
